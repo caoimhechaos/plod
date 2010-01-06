@@ -1,0 +1,993 @@
+#!/usr/local/bin/perl
+#
+#    PLOD-- Personal LOgging Device, v1.9
+#    Copyright (C), 1993-1999, Hal Pomeranz (hal@deer-run.com)
+#    All rights reserved.  No warranty expressed or implied.
+#    PLOD is freely distributable under the same terms as Perl.
+#    Inspired by Bill Mendyka (mendyka@dg-rtp.dg.com)
+#    Suggestions/Bugfixes:
+#	Bobby Billingsley (bobby@dc.dk)
+#	David W Crabb (crabb@phoenix.Princeton.EDU)
+#	Michel Dignard (dignard@ERE.UMontreal.CA)
+#	John Ellis (ellis@rtsg.mot.com)
+#	Tim Evans (Tim.Evans@Citicorp.com)
+#	Bob Gibson (rjg@sco.COM)
+#	Mike Lachowski (mlachow@erenj.com)
+#	Eric Prestemon (ecprest@pocorvares.er.usgs.GOV)
+#	Erik E. Rantapaa (rantapaa@math.umn.edu)
+#	Scot Schneebeli (sls@tct.com)
+#	James Tizard (james@ringo.ssn.flinders.edu.au)
+#	G. Paul Ziemba (paul@alantec.com)
+#
+######################### Begin Variable Declarations #########################
+#
+# All variables have default values which will be superceded by environment
+# variables of the same name.  The user's .plodrc is read after all other
+# variable assignments, so any assignments there take precedence.
+#
+# Note that $LOGFILE and $DEADLOG are used as absolute pathnames.  After
+# the .plodrc has been evaluated, $LOGDIR or $HOME will be prepended to
+# $LOGFILE and $DEADLOG respectively if either of these variables does not
+# begin with a '/'.
+#
+# Set $CRYPTCMD to null if you don't want encryption to be performed.
+#
+# KEYVAL	key value used by CRYPTCMD
+# PROMPT	true if user wants to be prompted for KEYVAL
+# CRYPTCMD	encryption command, set this to null for no encryption
+# TMPFILE	file name to use for temporary holding
+# EDITOR	editor called by ~e
+# VISUAL	editor called by ~v
+# PAGER         used by ~p and ~h when output longer than one page (see LINES)
+# LINES		number of lines on the screen
+# LOGDIR	directory containing log files
+# LOGFILE	absolute path of log file
+# BACKUP	absolute path for backup of current LOGFILE
+# HOME		user's home directory
+# PLODRC	default user startup file
+# DEADLOG	place to drop dead.log file on abort or ~q, also used by ~d
+# STAMP		time/date stamp printed at the top of each entry
+# PREFIX	string prepended to each line of log entry
+# SUFFIX	string appended to each line of log entry
+# SEPARATOR	string which separates log entries (should be static)
+
+# Some variable values use date/time information
+#
+($ss, $mm, $hh, $DD, $MM, $YY) = localtime($^T); $MM++; 
+
+$KEYVAL = sprintf("pl%d%dod", $YY, $MM);
+$PROMPT = 0;
+$CRYPTCMD = "/usr/bin/crypt";
+$TMPFILE = "/tmp/plodtmp$$";
+$HOME = (getpwuid($<))[7];
+$EDITOR = "/usr/local/bin/emacs";
+$VISUAL = "/usr/local/bin/emacs";
+$PAGER =  "/usr/local/bin/less";
+$LINES = 24;
+$LOGDIR = "$HOME/.logdir";
+$LOGFILE = sprintf("%04d%02d", $YY+1900, $MM);
+$BACKUP = ".plod$$.bak";
+$PLODRC = "$HOME/.plodrc";
+$DEADLOG = "dead.log";
+$STAMP = sprintf("%02d/%02d/%04d, %02d:%02d --", $MM, $DD, $YY+1900, $hh, $mm);
+$PREFIX = '';
+$SUFFIX = '';
+$SEPARATOR = '-----';
+
+
+########################## End Variable Declarations ##########################
+######################### Begin Function Declarations #########################
+
+
+# Printvar (~=): Output the value of one or more variables.
+#
+sub printvar {
+   local($vars) = @_;
+   $, = ','; print eval "($vars)"; $, = '';
+   print "\n";
+   print "(continue composing note)\n";
+}
+$printvar = "\$var[, ...]\tOutput value of variables";
+$funcs{'='} = *printvar;
+
+
+# Bang (~!): Execute a command in the shell and then return to plod.
+#
+sub bang {
+   local($cmdline) = @_;
+   system("$cmdline");
+   print "(continue composing note)\n";
+}
+$bang = "cmdline\tExecute system command and return";
+$funcs{'!'} = *bang;
+
+
+# Redirect (~>): Pipe the output of a command into the current buffer.
+#
+sub redirect {
+   local($cmdline) = @_;
+   if (!open(CMD, "$cmdline |")) {
+      warn "*** Unable to execute: $cmdline\n";
+      return;
+   }
+   &readit(CMD);
+}
+$redirect = "cmdline\tAdd output of given command to buffer";
+$funcs{'>'} = *redirect;
+
+
+# Pipetocmd (~|): Pipe the contents of the current buffer through a UNIX
+# command line and replace the buffer with the result.
+#
+sub pipetocmd {
+   local($cmdline) = @_;
+   local($header);
+   if (!open(PIPELN, "| $cmdline >$TMPFILE 2>&1")) {	# output to tmp file
+      warn "*** Unable to execute: $cmdline\n";
+      return;
+   }
+   $header = shift @lines if ($STAMP);			# don't include stamp
+   print PIPELN @lines;
+   close(PIPELN);
+   if (!open(INP, "<$TMPFILE")) {
+      warn "*** Unable to get command output\n";
+      unshift(@lines, $header);
+      unlink $TMPFILE;
+      return;
+   }
+   undef @lines;					# replace buffer with
+   @lines = <INP>;					# contents of tmp file
+   close(INP);
+   unlink $TMPFILE;
+   unshift(@lines, $header) if ($STAMP);
+   print "(continue composing note)\n";   
+}
+$pipetocmd = "cmdline\tPipe contents of buffer through cmdline";
+$funcs{'|'} = *pipetocmd;
+
+
+# Perlit (~X): Execute Perl code.
+#
+sub perlit {
+   local($code) = @_;
+   eval "$code";
+   warn $@ if $@;
+   print "(continue composing note)\n";   
+}
+$perlit = "code\t\tExecute a line of Perl code";
+$funcs{'X'} = *perlit;
+
+
+# Longperl (~M): Edit then eval a multi-line Perl fragment
+#
+sub longperl {
+   local($bogus) = @_;
+   local($safename);
+   return(&mistake) if ($bogus);
+   if (@code) {
+      if (!open(TMP, "> $TMPFILE")) {
+         warn "*** Unable to create temporary file\n";
+         return;
+      }
+      print TMP @code;
+      close(TMP);
+   }
+   ($safename = $TMPFILE) =~ s/(\W)/\\$1/g;
+   system("$EDITOR $safename");
+   if (!open(TMP, "< $TMPFILE")) {
+      warn "*** Unable to read buffer\n";
+      return;
+   }
+   undef @code;
+   @code = <TMP>;
+   close(TMP);
+   system("/bin/rm -f $safename*");
+   eval "@code";
+   warn $@ if $@;
+   print "(continue composing note)\n";   
+}
+$longperl = "\t\tInvoke \$EDITOR on command buffer, then execute as Perl code";
+$funcs{'M'} = *longperl;
+
+
+# Appendfl (~a): Append contents of buffer to a file and return to plod.
+# To overwrite a file with the contents of the buffer, see &writefl().
+#
+sub appendfl {
+   local($args) = @_;
+   local(@args, $file);
+   if ($args =~ /\S/) {
+      @args = &shellwords($args);
+      if (@args != 1) {
+         warn "*** Only one argument allowed.\n";
+         return;
+      }
+      $file = $args[0];
+   }
+   else {
+      warn "*** No file name specified.\n";
+      return;
+   }
+   if (!open(OUTP, ">> $file")) {
+      warn "*** Could not append to file $file\n";
+      return;
+   }
+   print OUTP @lines;
+   close(OUTP);
+   print "Wrote ", scalar(@lines), " lines to file $file\n";
+   print "(continue composing note)\n";
+}
+$appendfl = "file\t\tAppend contents of buffer to file";
+$funcs{'a'} = *appendfl;
+
+
+# Getdead (~d): Suck contents of DEADLOG file into buffer.
+#
+sub getdead {
+   local($bogus) = @_;
+   return(&mistake) if ($bogus);
+   if (!open(DEAD, "<$DEADLOG")) {
+      warn "*** Unable to open $DEADLOG.\n";
+      return;
+   }
+   &readit(DEAD, $DEADLOG);
+}
+$getdead = "\t\tIncorporate contents of \$DEADLOG into buffer";
+$funcs{'d'} = *getdead;
+
+
+# Editbuf (~e) and Visualbuf (~v): Call appropriate editor on buffer.
+#
+sub editbuf {
+   local($bogus) = @_;
+   return(&mistake) if ($bogus);
+   &calledit($EDITOR);
+}
+sub visualbuf {
+   local($bogus) = @_;
+   return(&mistake) if ($bogus);
+   &calledit($VISUAL);
+}
+$editbuf = "\t\tEdit buffer with \$EDITOR";
+$visualbuf = "\t\tEdit buffer with \$VISUAL";
+$funcs{'e'} = *editbuf;
+$funcs{'v'} = *visualbuf;
+
+
+# Editlog (~E) and Visuallog (~V): Call appropriate editor on LOGFILE.
+#
+sub editlog {
+   local($args) = @_;
+   local($file, $key);
+   if ($args =~ /\S/) {
+      ($file, $key) = &shellwords($args);
+      return unless ($file || $key);
+   }
+   &logedit($EDITOR, $file, $key);
+   print "(continue composing note)\n";
+}
+sub visuallog {
+   local($args) = @_;
+   local($file, $key);
+   if ($args =~ /\S/) {
+      ($file, $key) = &shellwords($args);
+      return unless ($file || $key);
+   }
+   &logedit($VISUAL, $args);
+   print "(continue composing note)\n";
+}
+$editlog = "[file [key]]\tEdit LOGFILE [or older log] with \$EDITOR";
+$visuallog = "[file [key]]\tEdit LOGFILE [or older log] with \$VISUAL";
+$funcs{'E'} = *editlog;
+$funcs{'l'} = *editlog;
+$funcs{'V'} = *visuallog;
+
+
+# Helpuser (~h or ~?): Output a list of tilde escapes with associated
+# help messages (found in the scalar values of the type globs in %funcs).
+# Use the defined PAGER if the output would be more than LINES long.
+#
+sub helpuser {
+   local($safename);
+   $long = (scalar(keys %funcs) >= $LINES) && open(TMP, ">$TMPFILE");
+   for (sort keys %funcs) {
+      *info = $funcs{$_};
+      if ($long) {
+         print TMP "~$_ $info\n";
+      }
+      else { print "~$_ $info\n"; }
+   }
+   if ($long) {
+      close(TMP);
+      ($safename = $TMPFILE) =~ s/(\W)/\\$1/g;
+      system("$PAGER $safename");
+      unlink $TMPFILE;
+   }
+}
+$helpuser = "\t\tPrint this message";
+$funcs{'h'} = *helpuser;
+$funcs{'?'} = *helpuser;
+
+
+# Printout (~p):  cat back the current buffer for review.  Use PAGER if
+# the buffer is longer than LINES.
+#
+sub printout {
+   local($bogus) = @_;
+   local($safename);
+   return(&mistake) if ($bogus);
+   if (@lines < $LINES-1 || !open(TMP, ">$TMPFILE")) {
+      print "$SEPARATOR\n";
+      print @lines;
+   }
+   else {
+      print TMP @lines;
+      close(TMP);
+      ($safename = $TMPFILE) =~ s/(\W)/\\$1/g;
+      system("$PAGER $safename");
+      unlink $TMPFILE;
+   }
+   print "(continue composing note)\n";
+}
+$printout = "\t\tView contents of buffer, one page at a time";
+$funcs{'p'} = *printout;
+
+
+# Pagelog (~P): Page contents of LOGFILE.
+#
+sub pagelog {
+   local($args) = @_;
+   local($file, $key);
+   if ($args =~ /\S/) {
+      ($file, $key) = &shellwords($args);
+      return unless ($file || $key);
+   }
+   &pageit($file, $key);
+   print "(continue composing note)\n";
+}
+$pagelog = "[file [key]]\tView contents of LOGFILE [or older log] with PAGER";
+$funcs{'P'} = *pagelog;
+$funcs{'L'} = *pagelog;
+
+
+# Quitit (~q): Quit plod and attempt to save buffer in DEADLOG.  Also
+# called on SIGINT and SIGQUIT via &trapit().
+#
+sub quitit {
+   local($bogus) = @_;
+   return(&mistake) if ($bogus);
+   &PLODBadExit();
+}
+$quitit = "\t\tQuit, attempts to save buffer in \$DEADLOG";
+$funcs{'q'} = *quitit;
+
+
+# Readfile (~r): Append contents of file into buffer.
+#
+sub readfile {
+   local($args) = @_;
+   local(@args, $file);
+   if ($args =~ /\S/) {
+      @args = &shellwords($args);
+      if (@args != 1) {
+         warn "*** Only one argument allowed.\n";
+         return;
+      }
+      $file = $args[0];
+   }
+   else {
+      warn "*** No file name specified.\n";
+      return;
+   }
+   if (!open(INPT, "<$file")) {
+      warn "*** Unable to open $file.\n";
+      return;
+   }
+   &readit(INPT, $file);
+}
+$readfile = "file\t\tRead contents of file into buffer";
+$funcs{'r'} = *readfile;
+
+
+# Writefl (~w): Overwrite file with contents of buffer.  To append to a
+# given file, see &appendfl().
+#
+sub writefl {
+   local($args) = @_;
+   local(@args, $file);
+   if ($args =~ /\S/) {
+      @args = &shellwords($args);
+      if (@args != 1) {
+         warn "*** Only one argument allowed.\n";
+         return;
+      }
+      $file = $args[0];
+   }
+   else {
+      warn "*** No file name specified.\n";
+      return;
+   }
+   if (!open(OUTP, "> $file")) {
+      warn "*** Could not write to file $file\n";
+      return;
+   }
+   print OUTP @lines;
+   close(OUTP);
+   print "Wrote ", scalar(@lines), " lines to file $file\n";
+   print "(continue composing note)\n";
+}
+$writefl = "file\t\tOverwrite file with contents of buffer";
+$funcs{'w'} = *writefl;
+
+
+# Exitnow (~x): Exit plod without writing to DEADLOG or LOGFILE.
+#
+sub exitnow {
+   local($bogus) = @_;
+   return(&mistake) if ($bogus);
+   &PLODNormExit();
+}
+$exitnow = "\t\tExit without saving buffer";
+$funcs{'x'} = *exitnow;
+
+
+########################## End Function Declarations ##########################
+############################# Begin Main Program ##############################
+
+
+# Check for /etc/plodrc and ~/.plodrc and eval() contents.  Exit with an
+# error message if eval() complains for any reason.  Environment supercedes
+# /etc/plodrc but is overridden by ~/.plodrc.
+#
+if (-e "/etc/plodrc") {
+   eval { do "/etc/plodrc"; };
+   die "*** Error in /etc/plodrc:\n$@" if $@;
+}
+
+$BACKUP = $ENV{'BACKUP'} if (defined($ENV{'BACKUP'}));
+$CRYPTCMD = $ENV{'CRYPTCMD'} if (defined($ENV{'CRYPTCMD'}));
+$DEADLOG = $ENV{'DEADLOG'} if ($ENV{'DEADLOG'});
+$PLODRC = $ENV{'PLODRC'} if ($ENV{'PLODRC'});
+$EDITOR = $ENV{'EDITOR'} if ($ENV{'EDITOR'});
+$HOME = $ENV{'HOME'} if ($ENV{'HOME'});
+$KEYVAL = $ENV{'KEYVAL'} if ($ENV{'KEYVAL'});
+$LINES = $ENV{'LINES'} if ($ENV{'LINES'});
+$LOGDIR = $ENV{'LOGDIR'} if ($ENV{'LOGDIR'});
+$LOGFILE = $ENV{'LOGFILE'} if ($ENV{'LOGFILE'});
+$PAGER = $ENV{'PAGER'} if ($ENV{'PAGER'});
+$PREFIX = $ENV{'PREFIX'} if (defined($ENV{'PREFIX'}));
+$PROMPT = $ENV{'PROMPT'} if (defined($ENV{'PROMPT'}));
+$STAMP = $ENV{'STAMP'} if (defined($ENV{'STAMP'}));
+$TMPFILE = $ENV{'TMPFILE'}if ($ENV{'TMPFILE'});
+$VISUAL = $ENV{'VISUAL'} if ($ENV{'VISUAL'});
+$SEPARATOR = $ENV{'SEPARATOR'} if ($ENV{'SEPARATOR'});
+$SUFFIX = $ENV{'SUFFIX'} if (defined($ENV{'SUFFIX'}));
+
+# Set some defaults
+#
+$grep = $cat = $edit = $page = '';
+$pattern = $file = $key = '';
+
+# Now process arguments as long as the first thing in @ARGV looks like
+# it might be one.  After that, we assume the user is making a one line
+# log entry.
+#
+while ($ARGV[0] =~ /^-\w$/) {
+   $curr = shift @ARGV;
+   if ($curr eq '-f') {
+      &usage unless (@ARGV);
+      $PLODRC = shift @ARGV;
+   }
+   elsif ($curr eq '-s') {
+      $PROMPT = 1;
+   }
+   elsif ($curr eq '-g' || $curr eq '-G') {
+      &usage() if ($grep || $cat || $edit || $page);
+      &usage unless (@ARGV);
+      $grep = $curr;
+      $pattern = shift @ARGV;
+      $file = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+      $key = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+   }
+   elsif ($curr eq '-E' || $curr eq '-V') {
+      &usage() if ($grep || $cat || $edit || $page);
+      $edit = $curr;
+      $file = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+      $key = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+   }
+   elsif ($curr eq '-P') {
+      &usage() if ($grep || $cat || $edit || $page);
+      $page = $curr;
+      $file = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+      $key = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+   }
+   elsif ($curr eq '-C') {
+      &usage() if ($grep || $cat || $edit || $page);
+      $cat = $curr;
+      $file = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+      $key = shift @ARGV unless ($ARGV[0] =~ /^-\w$/);
+   }
+   else { &usage(); }
+}
+&usage() if (@ARGV && ($grep || $cat || $edit || $page));
+
+
+# Now do the .plodrc.  We have to do this here so the user can
+# change the location/name of the file with the -f option.
+#
+$PLODRC = "$HOME/$PLODRC" unless ($PLODRC =~ /^\.?\.?\//);
+if (-e $PLODRC) {
+   die "*** $PLODRC is not a regular file.\n" unless (-f $PLODRC);
+   eval { do "$PLODRC"; };
+   die "*** Error in $PLODRC:\n$@" if $@;
+}
+
+# Prepend parent directories unless we have explicit pathnames
+#
+$LOGFILE = "$LOGDIR/$LOGFILE" unless ($LOGFILE =~ /^\.?\.?\//);
+$DEADLOG = "$HOME/$DEADLOG" unless ($DEADLOG =~ /^\.?\.?\//);
+$BACKUP = "$HOME/$BACKUP" if ($BACKUP && !($BACKUP =~ /^\.?\.?\//));
+
+# Do a $BACKUP file if $LOGFILE is non-empty.  Failure to create a
+# backup is not a fatal error.
+#
+if ($BACKUP && -s $LOGFILE) {
+   ($safelog = $LOGFILE) =~ s/(\W)/\\$1/g;
+   ($safeback = $BACKUP) =~ s/(\W)/\\$1/g;
+   if (system("cp $safelog $safeback") >> 8) {
+      warn "*** Couldn't create backup file $BACKUP.\n";
+      $BACKUP = '';
+   }
+   else { chmod(0600, $BACKUP); }
+}
+
+# You can lose your log file if CRYPTCMD is set, but the executable
+# doesn't actually exist.
+#
+&PLODBadExit("There's something wrong with $CRYPTCMD-- I can't deal!\n")
+  if ($CRYPTCMD && !(-e $CRYPTCMD && -x _ && -f _ && -s _));
+
+# Extract dirname from $LOGFILE and make sure it exists
+#
+($dirname = $LOGFILE) =~ s,/[^/]*$,,;
+if (!(-d $dirname)) {
+   warn "Attempting to create logging directory, $dirname\n";
+   &PLODBadExit("Attempt failed!\n") unless (mkdir($dirname, 0700));
+}
+
+# Jam time/date stamp into buffer...
+#
+push(@lines, "$STAMP\n") if ($STAMP);
+
+# Log entry can appear on the command line, otherwise loop until end of
+# STDIN or '.' recognized on a line by itself.
+#
+if ($page) { 
+   &pageit($file, $key);
+   &PLODNormExit();
+}
+elsif ($edit) {
+   &logedit(($edit eq '-E') ? $EDITOR : $VISUAL, $file, $key);
+   &PLODNormExit();
+}
+elsif ($grep) {
+   $insensitive = ($grep eq "-g");
+   &loggrep($insensitive, $pattern, $file, $key);
+   &PLODNormExit();
+}
+elsif ($cat) {
+   $file = $file || $LOGFILE;
+   $file = "$LOGDIR/$file" unless ($file =~ /^\.?\.?\//);
+   &PLODBadExit("$file does not exist.\n") unless (-f $file);
+
+   $key = $key || $KEYVAL;
+   if ($CRYPTCMD) {
+      unless (&decrypt($key, $file, $TMPFILE)) {
+	 unlink($TMPFILE);
+	 &PLODBadExit("*** Can't decrypt $file.\n");
+      }
+      $file = $TMPFILE;
+   }
+   open(INP, "< $file") || &PLODBadExit("Can't read $file\n");
+   while (<INP>) { print; }
+   close(INP);
+   unlink($TMPFILE) if ($CRYPTCMD);
+
+   &PLODNormExit();
+}
+elsif (@ARGV) { push(@lines, "@ARGV\n"); }
+else {
+   if (-t STDIN) {
+      print "$STAMP\n" if ($STAMP);
+      $SIG{'QUIT'} = 'trapit';
+      $SIG{'INT'} = 'trapit';
+   }
+   while (<STDIN>) {
+      if (/^~/) {					# escape sequence:
+         ($esc, $args) = /^~(\S)\s*(.*)$/;		# 1) parse line
+         *glob = $funcs{$esc};				# 2) unpack type glob
+         if (!defined(&glob)) {				# 3) check defined()
+	    warn "Unrecognized escape sequence: ~$esc\n";
+            next;
+         }
+         &glob($args);					# 4) call func w/ args
+      }
+      elsif (/^\.\s*$/) {				# lone dot means end 
+         print "(eot)\n";				# of log entry
+         last;
+      }
+      else {						# else append line to
+         push(@lines, $_);				# log buffer
+      }
+   }
+}
+
+# Drop out if buffer is empty.  Append a final newline if one isn't there.
+#
+if (!@lines || (@lines == 1 && $STAMP)) {
+   warn "*** Empty log entry not added to log file\n";
+   &PLODNormExit();
+}
+$lines[$#lines] = "$lines[$#lines]\n" unless ($lines[$#lines] =~ /\n$/);
+
+# Completed log entry now in @lines.  If using encryption, call encryption
+# command to decrypt previous log entries (if present).  If not encrypting,
+# simply open log file to append.
+#
+if ($CRYPTCMD) {					# encrypting
+   if (-e $LOGFILE) {
+      unless (&decrypt($KEYVAL, $LOGFILE, $TMPFILE)) {
+         unlink($TMPFILE);
+         &PLODBadExit("*** Unable to decrypt logfile.\n");
+      }
+   }
+   if (!open(LOGFILE, ">> $TMPFILE")) {
+      unlink $TMPFILE;
+      &PLODBadExit("*** Unable to append new log entry\n");
+   }
+}
+else { 							# not encyrpting
+   if (!open(LOGFILE, ">> $LOGFILE")) {
+      &PLODBadExit("*** Unable to append new log entry\n");
+   }
+}
+
+# Dump contents of buffer into plain text file.
+#
+print LOGFILE "$SEPARATOR\n";
+if ($PREFIX || $SUFFIX) {
+   print LOGFILE $lines[0];
+   chop(@trunc = @lines[1 .. $#lines]);
+   for (@trunc) { print LOGFILE $PREFIX, $_, $SUFFIX, "\n"; }
+}
+else { print LOGFILE @lines; }
+close(LOGFILE);
+
+# If encrypting, replace old log file with new version.  Unlink plain
+# text temporary file when done.
+#
+if ($CRYPTCMD) {
+   unless (&encrypt($KEYVAL, $TMPFILE, "$LOGFILE.$$")) {
+      unlink("$LOGFILE.$$", $TMPFILE);
+      &PLODBadExit("*** Unable to encrypt log.  Previous version restored.\n");
+   }
+   unless (rename("$LOGFILE.$$", $LOGFILE)) {
+      unlink("$LOGFILE.$$", $TMPFILE);
+      &PLODBadExit("*** rename($LOGFILE.$$, $LOGFILE) failed.\n");
+   }
+   chmod 0600, $LOGFILE;
+   unlink $TMPFILE;
+}
+
+&PLODNormExit();
+
+
+############################## End Main Program ###############################
+########################### Miscellaneous Functions ###########################
+
+
+# Append contents of file $fname (associated with file handle $fh) to buffer.
+# Assume $fh is a pipe if $fname is null.  This function called by many tilde
+# escapes.
+#
+sub readit {
+   local($fh, $fname) = @_;
+   push(@lines, <$fh>);
+   print STDOUT ($fname) ? "$fname: " : "Added ";
+   print STDOUT "$. lines";
+   print STDOUT ($fname) ? "\n" : " to buffer.\n";
+   print STDOUT "(continue composing note)\n";
+   close($fh);
+}
+
+
+# Call the editor $_[0] on the contents of the buffer.  Used by &editbuf()
+# and &visualbuf().
+#
+sub calledit {
+   local($edit) = @_;
+   local($safename);
+   if (!open(EDIT, ">$TMPFILE")) {
+      warn "*** Unable to create file for editing\n";
+      return;
+   }
+   print EDIT @lines;
+   close(EDIT);
+   chmod 0600, $TMPFILE;
+   ($safename = $TMPFILE) =~ s/(\W)/\\$1/g;
+   system("$edit $safename");
+   if (!open(EDIT, "<$TMPFILE")) {
+      warn "*** Unable to read changes, returning to previous state.\n";
+      system("/bin/rm -f $safename*");
+      return;
+   }
+   undef @lines;
+   @lines = <EDIT>;
+   close(EDIT);
+   system("/bin/rm -f $safename*");
+   print "(continue composing note)\n";
+}
+
+
+# Call the appropriate editor on a log file.  Used by &editlog and &visuallog.
+#
+sub logedit {
+   local($edit, $file, $key) = @_;
+   local($safename);
+   $key = $key || $KEYVAL;
+   $file = $file || $LOGFILE;
+   $file = "$LOGDIR/$file" unless ($file =~ /^\.?\.?\//);
+   if ($CRYPTCMD) {
+      if (!(-e $file)) {
+	 warn "*** $file does not exist\n";
+	 return;
+      }
+      unless (&decrypt($key, $file, $TMPFILE)) {
+         unlink($TMPFILE);
+         warn "*** Unable to decrypt $file.\n";
+         return;
+      }
+      chmod 0600, $TMPFILE;
+      ($safename = $TMPFILE) =~ s/(\W)/\\$1/g;
+      system("$edit $safename");
+      if (!(-e $TMPFILE) || -z _) {
+         warn "*** Modified file is empty-- restoring old version\n";
+	 unlink $TMPFILE;
+	 return;
+      }
+      unless (&encrypt($key, $TMPFILE, "$file.$$")) {
+         warn "*** Unable to re-encrypt log file.  Changes lost.\n";
+         unlink("$file.$$", $TMPFILE);
+         return;
+      }
+      unless (rename("$file.$$", $file)) {
+         warn "*** rename($file.$$, $file) failed.  Changes lost.\n";
+         unlink("$file.$$", $TMPFILE);
+         return;
+      }
+      chmod 0600, $file;
+      unlink $TMPFILE;
+   }
+   else {
+      ($safename = $file) =~ s/(\W)/\\$1/g;
+      system("$edit $safename");
+   }
+}
+
+
+# Print all entries from a log file which contain a line matching a
+# given pattern.
+#
+sub loggrep {
+   local($insensitive, $pattern, $file, $key) = @_;
+   local(@entry, $print);
+   
+   $pattern =~ tr/[A-Z]/[a-z]/ if ($insensitive);
+   $key = $key || $KEYVAL;
+   $file = $file || $LOGFILE;
+   $file = "$LOGDIR/$file" unless ($file =~ /^\.?\.?\//);
+   if ($CRYPTCMD) {
+      unless (&decrypt($key, $file, $TMPFILE)) {
+         unlink($TMPFILE);
+         warn "*** Unable to decrypt $file.\n";
+         return;
+      }
+      $file = $TMPFILE;
+   }
+   unless (open(INP, "< $file")) {
+      warn "*** Can't open $file for reading.\n";
+      return;
+   }
+   $print = 0; undef @entry;
+   while (<INP>) {
+      if (/^$SEPARATOR$/o) {
+         print @entry if ($print);
+         $print = 0; undef @entry;
+      }
+      push(@entry, $_);
+      tr/[A-Z]/[a-z]/ if ($insensitive);
+      $print = ($print || /$pattern/o);
+   }
+   print @entry if ($print);
+   close(INP);
+   unlink($TMPFILE) if ($CRYPTCMD);
+}
+
+
+# Page a log file.
+#
+sub pageit {
+   local($file, $key) = @_;
+   local($safename);
+   $key = $key || $KEYVAL;
+   $file = $file || $LOGFILE;
+   $file = "$LOGDIR/$file" unless ($file =~ /^\.?\.?\//);
+   if ($CRYPTCMD) {
+      unless (&decrypt($key, $file, $TMPFILE)) {
+         unlink($TMPFILE);
+         warn "*** Unable to decrypt $file.\n";
+         return;
+      }
+      $file = $TMPFILE;
+   }
+   ($safename = $file) =~ s/(\W)/\\$1/g;
+   system("$PAGER $safename");
+   unlink($TMPFILE) if ($CRYPTCMD);
+}
+
+
+# Taken directly from shellwords.pl as provided with the Perl4.036
+# distribution.  Minor tweaks to exit gracefully.
+#
+sub shellwords {
+    package shellwords;
+    local($_) = join('', @_) if @_;
+    local(@words,$snippet,$field);
+
+    s/^\s+//;
+    while ($_ ne '') {
+	$field = '';
+	for (;;) {
+	    if (s/^"(([^"\\]|\\[\\"])*)"//) {
+		($snippet = $1) =~ s#\\(.)#$1#g;
+	    }
+	    elsif (/^"/) {
+		warn "*** Unmatched double quote in arguments.\n";
+	        return ();
+	    }
+	    elsif (s/^'(([^'\\]|\\[\\'])*)'//) {
+		($snippet = $1) =~ s#\\(.)#$1#g;
+	    }
+	    elsif (/^'/) {
+		warn "*** Unmatched single quote in arguments.\n";
+                return ();
+	    }
+	    elsif (s/^\\(.)//) {
+		$snippet = $1;
+	    }
+	    elsif (s/^([^\s\\'"]+)//) {
+		$snippet = $1;
+	    }
+	    else {
+		s/^\s+//;
+		last;
+	    }
+	    $field .= $snippet;
+	}
+	push(@words, $field);
+    }
+    @words;
+}
+
+
+# Generic warning message called by all escapes that do not expect arguments
+# when @_ is not empty.
+#
+sub mistake {
+   warn "*** Arguments are not expected for this escape.\n";
+}
+
+
+# Wrapper for &PLODBadExit()-- called on SIGINT and SIGQUIT.  Wrapper
+# required because signal handlers get the signal as an argument, and
+# this does not correspond with arguments to &PLODBadExit().
+#
+sub trapit {
+   &PLODBadExit();
+}
+
+
+# A mundane usage message, and a dumb comment.
+#
+sub usage {
+   local($prog);
+   ($prog = $0) =~ s,.*/,,;
+   warn "Usage: $prog [one line log entry]\tor\n";
+   warn "       $prog -C|-E|-V|-P [file [key]]\tor\n";
+   die  "       $prog -g|-G pattern [file [key]]\n";
+}
+
+
+# Routine called when PLOD exits abnormally.  Attempts recover log
+# from backup if it looks like its been blown away, and attempts to
+# dump current log buffer into $DEADLOG.  Will call user-defined error
+# routine if present.
+#
+sub PLODBadExit {
+   local($msg) = @_;
+   local($stat, $safeback, $safelog);
+
+   if ($BACKUP && -s $BACKUP && !(-s $LOGFILE)) {
+      ($safeback = $BACKUP) =~ s/(\W)/\\$1/g;
+      ($safelog = $LOGFILE) =~ s/(\W)/\\$1/g;
+      $stat = (system("mv -f $safeback $safelog")>>8) ? "failed!":"succeeded!";
+      warn "*** $LOGFILE truncated or missing.  Restore $stat\n";
+   }
+   open(DEAD, ">> $DEADLOG") || die "Can't open $DEADLOG\n";
+   print DEAD @lines;
+   close(DEAD);
+   &on_error() if (defined(&on_error));
+   die $msg if ($msg);
+   exit(255);
+}
+
+
+# Routine called when PLOD exits normally.  Missing logfile triggers
+# abnormal exit.  Will call user-defined routine if present.
+#
+sub PLODNormExit {
+   local($stat);
+
+   &PLODBadExit("*** Normal exit aborted!\n")
+                                 if ($BACKUP && -s $BACKUP && !(-s $LOGFILE));
+   unlink($BACKUP) if ($BACKUP);
+   &on_exit() if (defined(&on_exit));
+   exit(0);
+}
+
+
+# encrypt() and decrypt() are provided to allow users to customize their
+# encryption strategy.  UNIX crypt is bidirectional so the functions are
+# identical, but other encryption mechanisms might not have this property.
+#
+sub encrypt {
+   local($key, $inputfl, $outputfl) = @_;
+   local($safekey, $safeinp, $safeout);
+
+   unlink($outputfl);
+
+   if ($PROMPT) {		# Prompt for $KEYVAL if $PROMPT has been set
+      print "File is $file.\n";
+      print "Please enter encryption key: ";
+      system 'stty', '-echo';
+      chop($key = <STDIN>);
+      system 'stty', 'echo';
+      print "\n";
+   }   
+
+   ($safekey = $key) =~ s/(\W)/\\$1/g;
+   ($safeinp = $inputfl) =~ s/(\W)/\\$1/g;
+   ($safeout = $outputfl) =~ s/(\W)/\\$1/g;
+   !(system("$CRYPTCMD $safekey < $safeinp >$safeout") >> 8);
+}
+
+sub decrypt {
+   local($key, $inputfl, $outputfl) = @_;
+   local($safekey, $safeinp, $safeout);
+
+   unlink($outputfl);
+
+   if ($PROMPT) {		# Prompt for $KEYVAL if $PROMPT has been set
+      print "File is $file.\n";
+      print "Please enter encryption key: ";
+      system 'stty', '-echo';
+      chop($key = <STDIN>);
+      system 'stty', 'echo';
+      print "\n";
+   }   
+
+   ($safekey = $key) =~ s/(\W)/\\$1/g;
+   ($safeinp = $inputfl) =~ s/(\W)/\\$1/g;
+   ($safeout = $outputfl) =~ s/(\W)/\\$1/g;
+   !(system("$CRYPTCMD $safekey < $safeinp >$safeout") >> 8);
+}

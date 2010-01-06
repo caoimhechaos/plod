@@ -1,0 +1,5 @@
+* redo argument processing to handle multiple log files (Bob Gibson
+  <rjg@sco.COM>)
+
+* delayed loading (ala plum) of tilde escape functions
+

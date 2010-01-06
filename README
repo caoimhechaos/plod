@@ -1,0 +1,145 @@
+PLOD is a tool designed to help administrators (and others) keep track
+of their daily activities.  Since your management will typically have
+no idea what you are doing to justify such an exorbitant salary (any
+amount of money they may be paying you being classified as
+"exorbitant"), and since most people forget what they do themselves,
+it's good to keep a record.  Trot your logs out around performance
+review time, and show them to your management (after suitable
+sanitization) on a regular basis.
+
+The interface is designed to make it quick to dash off a simple note
+to yourself.  Since most folks who are going to use PLOD also use
+email, I've based the interface on Berkeley mail-- tilde escapes and
+all (for a list of escapes, try ~h or ~?).  By default, your logs will
+be encrypted using the /bin/crypt command-- not secure in the least,
+but marginally safe from casual browsing (I tend to vent into my logs
+sometimes rather than at those who might be offended and fire me).
+You can turn off the encryption if you find it more a hassle than a
+comfort.
+
+Which brings us to the subject of customization.  Many escape
+sequences and variables have already been defined, but you can make
+your own changes using your ~/.plodrc file.  This file is interpreted
+using eval(), so any valid Perl syntax is acceptable.  Variables may
+be customized by editing this script directly, setting an environment
+variable with the same name as the PLOD variable, or by doing an
+assignment in your .plodrc (.plodrc value supersedes environment value
+which beats default value in script).  New tilde escapes may be
+defined by assigning a type glob, say *foo, to the global array
+%funcs-- the index of the type glob in the array being the character
+(single chars only!) of the escape sequence.  &foo should be a
+function which performs the escape (any arguments after the escape are
+passed in as a single string in @_), and $foo can be a descriptive
+help string (see &helpuser()).  Your functions may reference any of
+the PLOD customization variables as well as the list @lines, which
+contains all information in the current log entry (including the
+date/time stamp PLOD adds to the beginning of each entry).  For
+examples, consult the PLOD source code or the manual page.
+
+PLOD is a living, growing entity.  If you have suggestions for
+improvements or new features, or find any bugs, please send them to me
+via email.  The latest version of PLOD is always available at
+http://www.deer-run.com/~hal/plod/plod.shar
+
+Share and enjoy!
+
+Hal Pomeranz, hal@deer-run.com
+
+===============================================================================
+
+History:
+
+v1.0 (Original release to comp.lang.perl)
+
+
+v1.1 (Second release to comp.lang.perl)
+** &pipetocmd() unlinks all temporary files it creates (Pomeranz)
+
+** Variable assignment idiom cleaned up (Rantapaa)
+
+** LOGDIR and HOME are only prepended to LOGFILE and DEADLOG after
+   .plodrc has been eval-ed and if LOGFILE and DEADLOG are relative
+   paths.  This means that you can change LOGDIR in your .plodrc and
+   really affect where the log files go. (Rantapaa)
+
+** eval of .plodrc is done with "do" rather than "cat" (Rantapaa)
+
+** You can now do quick one-liner entries on the command line, e.g.
+   "plod Completed modifications to PLOD" (Rantapaa)
+
+** Time/date stamp only printed if user is entering info directly from
+   a tty (Rantapaa)
+
+** PLOD attempts to create logging directory if it does not exist (Ellis)
+
+
+v1.2 (not publicly released)
+** Page/Edit/Visual log files from interactive mode or from the shell
+   (Tizard)
+
+
+v1.3 (comp.lang.perl again, and also comp.sources.misc)
+** Multi-line Perl input function, ~M (Crabb)
+
+** Manual page generated (Pomeranz)
+
+
+v1.4 (not publicly released)
+** Trap for empty log entries and don't add them to log file (Pomeranz)
+
+** -C flag to cat logfile to STDOUT (Prestemon)
+
+** /etc/plodrc (Lachowski)
+
+** $STAMP customization variable (Lachowski/Pomeranz)
+
+
+v1.5 (not publicly released)
+** Trap for non-existant/zero size/non-executable CRYPTCMD (Pomeranz)
+
+
+v1.6 (comp.sources.misc, comp.lang.perl, LISA VII)
+** Minor fix to above trap.  Would have been part of v1.5 but I had already
+   distributed v1.5 to a few people.
+
+
+v1.7 (comp.lang.perl)
+** Minor code cleanup (finally ran perl -w ;-)) (Pomeranz)
+
+** -f flag to change user startup file (Dignard)
+
+** Modularized &encrypt and &decrypt to allow customization of encryption
+   strategy (Schneebeli)
+
+** Manual page updated (Pomeranz)
+
+** Relative directory pattern matches corrected (Pomeranz)
+
+
+v1.8
+** $PREFIX and $SUFFIX variables added (Billingsley)
+
+** Error checking on &encrypt and &decrypt (Ziemba)
+
+** "plod -[g|G]" switch (Gibson)
+
+** $SEPARATOR variable (Pomeranz)
+
+** Changed argument passing to logedit(), and pageit(), and improved
+   argument parsing on some tilde escapes (Pomeranz)
+
+** Protect filenames that get passed to the shell (Pomeranz)
+
+** -s option and $PROMPT to prompt for keys (Schneebeli/Pomeranz)
+
+** Argument processing cleaned up (Pomeranz)
+
+** $PLODRC variable added (Pomeranz)
+
+** $BACKUP file mechanism (Pomeranz)
+
+** post-execution routines (Pomeranz)
+
+v1.9
+** Y2K fixes (Evans)
+
