@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #
-#    PLOD-- Personal LOgging Device, v1.9
+#    PLOD-- Personal LOgging Device, v1.9.1
 #    Copyright (C), 1993-1999, Hal Pomeranz (hal@deer-run.com)
 #    All rights reserved.  No warranty expressed or implied.
 #    PLOD is freely distributable under the same terms as Perl.
@@ -62,7 +62,7 @@ my $KEYVAL = sprintf("pl%d%dod", $YYYY, $MM);
 my $PROMPT = 0;
 my $CRYPTCMD = "/usr/bin/crypt";
 my $TMPFILE = "/tmp/plodtmp$$";
-my $HOME = $ENV{'HOME'};
+my $HOME = (getpwuid($<))[7];
 my $EDITOR = "/usr/bin/vi";
 my $VISUAL = "/usr/bin/vi";
 my $PAGER =  "/usr/less";

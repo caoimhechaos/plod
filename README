@@ -143,3 +143,6 @@ v1.8
 v1.9
 ** Y2K fixes (Evans)
 
+v1.9.1
+** added better Y2k fix using strftime (DisastersMaster)
+** moved backup files and crash logs to $LOGDIR (DisastersMaster)
