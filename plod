@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl
+#!/usr/bin/perl
 #
 #    PLOD-- Personal LOgging Device, v1.9
 #    Copyright (C), 1993-1999, Hal Pomeranz (hal@deer-run.com)
@@ -51,28 +51,31 @@
 # SUFFIX	string appended to each line of log entry
 # SEPARATOR	string which separates log entries (should be static)
 
+use Time::Local;
+use POSIX qw(strftime);
+
 # Some variable values use date/time information
 #
-($ss, $mm, $hh, $DD, $MM, $YY) = localtime($^T); $MM++; 
+my ($mm, $hh, $DD, $MM, $YYYY) = split(/,/,strftime("%M, %H, %d, %m, %Y",localtime())); 
 
-$KEYVAL = sprintf("pl%d%dod", $YY, $MM);
-$PROMPT = 0;
-$CRYPTCMD = "/usr/bin/crypt";
-$TMPFILE = "/tmp/plodtmp$$";
-$HOME = (getpwuid($<))[7];
-$EDITOR = "/usr/local/bin/emacs";
-$VISUAL = "/usr/local/bin/emacs";
-$PAGER =  "/usr/local/bin/less";
-$LINES = 24;
-$LOGDIR = "$HOME/.logdir";
-$LOGFILE = sprintf("%04d%02d", $YY+1900, $MM);
-$BACKUP = ".plod$$.bak";
-$PLODRC = "$HOME/.plodrc";
-$DEADLOG = "dead.log";
-$STAMP = sprintf("%02d/%02d/%04d, %02d:%02d --", $MM, $DD, $YY+1900, $hh, $mm);
-$PREFIX = '';
-$SUFFIX = '';
-$SEPARATOR = '-----';
+my $KEYVAL = sprintf("pl%d%dod", $YYYY, $MM);
+my $PROMPT = 0;
+my $CRYPTCMD = "/usr/bin/crypt";
+my $TMPFILE = "/tmp/plodtmp$$";
+my $HOME = $ENV{'HOME'};
+my $EDITOR = "/usr/bin/vi";
+my $VISUAL = "/usr/bin/vi";
+my $PAGER =  "/usr/less";
+my $LINES = 24;
+my $LOGDIR = "$HOME/.logdir";
+my $LOGFILE = sprintf("%04d%02d", $YYYY, $MM);
+my $BACKUP = "$LOGDIR/.plod$$.bak";
+my $PLODRC = "$HOME/.plodrc";
+my $DEADLOG = "$LOGDIR/dead.log";
+my $STAMP = sprintf("%02d.%02d.%04d, %02d:%02d --", $DD, $MM, $YYYY, $hh, $mm);
+my $PREFIX = '';
+my $SUFFIX = '';
+my $SEPARATOR = '-----';
 
 
 ########################## End Variable Declarations ##########################
