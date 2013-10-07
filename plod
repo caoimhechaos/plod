@@ -531,6 +531,14 @@ $LOGFILE = "$LOGDIR/$LOGFILE" unless ($LOGFILE =~ /^\.?\.?\//);
 $DEADLOG = "$HOME/$DEADLOG" unless ($DEADLOG =~ /^\.?\.?\//);
 $BACKUP = "$HOME/$BACKUP" if ($BACKUP && !($BACKUP =~ /^\.?\.?\//));
 
+# Extract dirname from $LOGFILE and make sure it exists
+#
+($dirname = $LOGFILE) =~ s,/[^/]*$,,;
+if (!(-d $dirname)) {
+   warn "Attempting to create logging directory, $dirname\n";
+   &PLODBadExit("Attempt failed!\n") unless (mkdir($dirname, 0700));
+}
+
 # Do a $BACKUP file if $LOGFILE is non-empty.  Failure to create a
 # backup is not a fatal error.
 #
@@ -549,14 +557,6 @@ if ($BACKUP && -s $LOGFILE) {
 #
 &PLODBadExit("There's something wrong with $CRYPTCMD-- I can't deal!\n")
   if ($CRYPTCMD && !(-e $CRYPTCMD && -x _ && -f _ && -s _));
-
-# Extract dirname from $LOGFILE and make sure it exists
-#
-($dirname = $LOGFILE) =~ s,/[^/]*$,,;
-if (!(-d $dirname)) {
-   warn "Attempting to create logging directory, $dirname\n";
-   &PLODBadExit("Attempt failed!\n") unless (mkdir($dirname, 0700));
-}
 
 # Jam time/date stamp into buffer...
 #
